@@ -1,4 +1,4 @@
-import { Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { ParclV3InstructionBuilder } from "./instructionBuilder";
 import {
   CreateMarginAccountAccounts,
@@ -41,12 +41,21 @@ export class ParclV3TransactionBuilder {
     this.ix = ix;
   }
 
-  buildSigned(signers: Signer[], recentBlockhash: string): Transaction {
+  buildSigned(
+    signers: Signer[], 
+    recentBlockhash: string, 
+    lastValidBlockHeight?: number
+  ): Transaction {
     const tx = new Transaction().add(...this._instructions);
     if (this._feePayer !== undefined) {
       tx.feePayer = translateAddress(this._feePayer);
     }
+    if (lastValidBlockHeight !== undefined) {
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+    }
+
     tx.recentBlockhash = recentBlockhash;
+
     tx.partialSign(...signers);
     return tx;
   }
@@ -72,6 +81,14 @@ export class ParclV3TransactionBuilder {
   feePayer(feePayer: Address): this {
     this._feePayer = feePayer;
     return this;
+  }
+
+  setComputeBudget(units: number): this {
+    const ix = ComputeBudgetProgram.setComputeUnitLimit({
+      units,
+    });
+
+    return this.instruction(ix);
   }
 
   // LP ACCOUNT //

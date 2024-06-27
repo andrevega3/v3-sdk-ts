@@ -30,3 +30,6 @@ yarn-error.log*
 
 #visual-studio-code
 .vscode/
+
+# Ignore all files with .env.* pattern
+.env.*

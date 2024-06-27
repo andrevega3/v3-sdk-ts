@@ -1,4 +1,4 @@
-import { Connection, Keypair, clusterApiUrl } from "@solana/web3.js";
+import { Connection, Keypair, clusterApiUrl, sendAndConfirmTransaction } from "@solana/web3.js";
 import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import bs58 from "bs58";
 import {
@@ -12,10 +12,10 @@ import {
   getExchangePda,
 } from "../src";
 import * as dotenv from "dotenv";
-dotenv.config();
+dotenv.config({ path: '.env.local' });
 
 (async function main() {
-  const signer = Keypair.fromSecretKey(bs58.decode(process.env.KEYPAIR as string));
+  const signer = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY as string));
   const rpcUrl = clusterApiUrl("mainnet-beta");
   const sdk = new ParclV3Sdk({ rpcUrl });
   // only live exchange is exchangeId=0
@@ -32,7 +32,7 @@ dotenv.config();
   );
   // deposit $5.1 of margin collateral
   // NOTE: flip collateral expo sign
-  const margin = parseCollateralAmount(5.1, -exchange.collateralExpo);
+  const margin = parseCollateralAmount(1, -exchange.collateralExpo);
   const marketId = 4;
   const [marketAddress] = getMarketPda(exchangeAddress, marketId);
   const market = await sdk.accountFetcher.getMarket(marketAddress);
@@ -56,10 +56,10 @@ dotenv.config();
   const tx = sdk
     .transactionBuilder()
     // create new margin account since we dont have one yet
-    .createMarginAccount(
-      { exchange: exchangeAddress, marginAccount, owner: signer.publicKey },
-      { marginAccountId }
-    )
+    // .createMarginAccount(
+    //   { exchange: exchangeAddress, marginAccount, owner: signer.publicKey },
+    //   { marginAccountId }
+    // )
     // deposit margin collateral into new margin account
     .depositMargin(
       {
@@ -82,5 +82,5 @@ dotenv.config();
     .buildSigned([signer], latestBlockhash);
   console.log((await connection.simulateTransaction(tx)).value);
   // send tx
-  // sendAndConfirmTransaction(connection, tx, [owner]);
+  sendAndConfirmTransaction(connection, tx, [signer]);
 })();
