@@ -24,6 +24,8 @@ import * as dotenv from "dotenv";
 import bs58 from "bs58";
 import { PriceData } from "@pythnetwork/client";
 import now from  'performance-now';
+import { wait}  from '../src/utils/wait'
+
 
 dotenv.config({ path: '.env.local' });
 
@@ -50,7 +52,7 @@ describe('Modify Position Performance Test', () => {
     const testParams = getTestParams();
     console.log(`New test params: ${JSON.stringify(testParams)}`)
     const numIncreaseRuns = testParams.runIncreasePosition ?? 10;
-    const numDecreaseRuns = testParams.runDecreasePosition ?? 10;
+    // const numDecreaseRuns = testParams.runDecreasePosition ?? 10;
 
     beforeAll(() => {
         if (!process.env.RPC_URL) {
@@ -127,7 +129,7 @@ describe('Modify Position Performance Test', () => {
                     .feePayer(signer.publicKey)
                     .buildSigned([signer], latestBlockhash);
 
-                    console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
+            console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
             await sendAndConfirmTransaction(connection, tx, [signer],{
                 minContextSlot: minContextSlot,
                 commitment: commitment
@@ -149,27 +151,65 @@ describe('Modify Position Performance Test', () => {
                 throw new Error("Failed to fetch priceFeed");
             }
 
-            const sizeDelta = parseSize(0.1);
+            const sizeDelta = parseSize(0.05);
             const acceptablePrice = parsePrice(1.1 * priceFeed.aggregate.price);
             const markets = [marketAddress];
             const priceFeeds = [market.priceFeed];
     
             let successes = 0;
             let totalDuration = 0;
+            const durations: number[] = [];
+            let successesNew = 0;
+            let totalDurationNew = 0;
+            const durationsNew: number[] = [];
             console.log(`Number of runs: ${numIncreaseRuns}`)
             console.log(`Commitment level: ${commitment}`)
             for (let i = 0; i < numIncreaseRuns; i++) {
+                const startTimeNew = now()
                 try {
-                    const startTime = now();
-                    const {
-                        context: { slot: minContextSlot },
-                        value: { 
-                            blockhash: latestBlockhash,
-                            lastValidBlockHeight 
+                    const getLatestBlockhashAndContext = await connection.getLatestBlockhashAndContext({ commitment: "confirmed" });
+
+                    const minContextSlot: number = getLatestBlockhashAndContext.context.slot - 4;
+                    const blockhash: string = getLatestBlockhashAndContext.value.blockhash;
+                    const lastValidBlockHeight: number = getLatestBlockhashAndContext.value.lastValidBlockHeight;
+
+                    const tx = await sdk
+                        .transactionBuilder()
+                        .setComputeUnitBudget(400_000) // Will optimize later
+                        .setComputeUnitPrice(1) // Will optimize later
+                        .modifyPosition(
+                            { exchange: exchangeAddress, marginAccount, signer: signer.publicKey },
+                            { sizeDelta, marketId, acceptablePrice },
+                            markets,
+                            priceFeeds
+                        )
+                        .feePayer(signer.publicKey)
+                        .buildOptimizedSigned(connection, [signer], blockhash, lastValidBlockHeight, "Medium");
+                    console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
+                    await sendAndConfirmTransaction(connection, tx, [signer],
+                        {
+                            // minContextSlot: minContextSlot,
+                            commitment: "confirmed"
                         }
-                    } = await connection.getLatestBlockhashAndContext(commitment);
-                    // Pass commitment to getLatest so you focus on confirmed rather than finalized
-                    // Why? https://solana.com/docs/advanced/confirmation#fetch-blockhashes-with-the-appropriate-commitment-level
+                    );
+                    const endTime = now();
+                    const duration = endTime - startTimeNew;
+    
+                    successesNew++;
+                    totalDurationNew += duration;
+                    durationsNew.push(duration);
+                    console.log(`New) Run ${i+1}: Success, took ${duration}ms`);
+                } catch (error) {
+                    const endTime = now();
+                    const duration = endTime - startTimeNew;
+
+                    totalDurationNew += duration;
+                    durationsNew.push(duration);
+                    console.log(`New) Run ${i+1}: Failed, error: ${error}`);
+                }
+                const startTimeOld = now();
+                try {
+                    const { blockhash: latestBlockhash } = await connection.getLatestBlockhash();
                     
                     const tx = sdk
                         .transactionBuilder()
@@ -180,95 +220,108 @@ describe('Modify Position Performance Test', () => {
                             priceFeeds
                         )
                         .feePayer(signer.publicKey)
-                        .buildSigned([signer], latestBlockhash, lastValidBlockHeight);
-                    console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
-                    await sendAndConfirmTransaction(connection, tx, [signer],{
-                        minContextSlot: minContextSlot,
-                        commitment: commitment
-                    });
-                    const endTime = now();
-                    const duration = endTime - startTime;
-    
-                    successes++;
-                    totalDuration += duration;
-                    console.log(`Run ${i+1}: Success, took ${duration}ms`);
-                } catch (error) {
-                    console.log(`Run ${i+1}: Failed, error: ${error}`);
-                }
-            }
-            if (successes > 0) {
-                const averageDuration = totalDuration / successes;
-                console.log(`Average time for ${successes} successful runs: ${averageDuration}ms`);
-            } else {
-                console.log('No successful runs');
-            }
-        }, numIncreaseRuns * 2 * 60 * 1000);
-    }
-
-    if(testParams.runDecreasePosition > 0) {
-        it('Run Decrease Position', async () => {
-            if (exchange === undefined) {
-                throw new Error("Failed to fetch exchange");
-            }
-            if (market === undefined) {
-                throw new Error("Failed to fetch market");
-            }
-    
-            priceFeed = await sdk.accountFetcher.getPythPriceFeed(market?.priceFeed);
-            if (priceFeed === undefined) {
-                throw new Error("Failed to fetch priceFeed");
-            }
-
-            const sizeDelta = -parseSize(0.1);
-            const acceptablePrice = parsePrice(1.1 * priceFeed.aggregate.price);
-            const markets = [marketAddress];
-            const priceFeeds = [market.priceFeed];
-    
-            let successes = 0;
-            let totalDuration = 0;
-
-            for (let i = 0; i < numDecreaseRuns; i++) {
-                try {
-                    const startTime = now();
-                    const {
-                        context: { slot: minContextSlot },
-                        value: { 
-                            blockhash: latestBlockhash,
-                            lastValidBlockHeight 
-                        }
-                    } = await connection.getLatestBlockhashAndContext();
-    
-                    const tx = sdk
-                        .transactionBuilder()
-                        .modifyPosition(
-                            { exchange: exchangeAddress, marginAccount, signer: signer.publicKey },
-                            { sizeDelta, marketId, acceptablePrice },
-                            markets,
-                            priceFeeds
-                        )
-                        .feePayer(signer.publicKey)
                         .buildSigned([signer], latestBlockhash);
-    
-                        console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
-                    await sendAndConfirmTransaction(connection, tx, [signer],{
-                        minContextSlot: minContextSlot
-                    });
+                    await sendAndConfirmTransaction(connection, tx, [signer]);
                     const endTime = now();
-                    const duration = endTime - startTime;
+                    const duration = endTime - startTimeOld;
     
                     successes++;
                     totalDuration += duration;
-                    console.log(`Run ${i+1}: Success, took ${duration}ms`);
+                    durations.push(duration);
+                    console.log(`Old) Run ${i+1}: Success, took ${duration}ms`);
                 } catch (error) {
-                    console.log(`Run ${i+1}: Failed, error: ${error}`);
+                    const endTime = now();
+                    const duration = endTime - startTimeOld;
+    
+                    totalDuration += duration;
+                    durations.push(duration);
+                    console.log(`Old) Run ${i+1}: Failed, error: ${error}`);
                 }
+                await wait(2000)
             }
             if (successes > 0) {
                 const averageDuration = totalDuration / successes;
-                console.log(`Average time for ${successes} successful runs: ${averageDuration}ms`);
+                durations.sort((a, b) => a - b);
+                const medianDuration = durations[Math.floor(durations.length / 2)];
+                console.log(`Old) Average time for ${successes} successful runs: ${averageDuration}ms`);
+                console.log(`Old) Median time for ${successes} successful runs: ${medianDuration}ms`);
+                const averageDurationNew = totalDurationNew / successesNew;
+                durationsNew.sort((a, b) => a - b);
+                const medianDurationNew = durationsNew[Math.floor(durationsNew.length / 2)];
+                console.log(`New) Average time for ${successesNew} successful runs: ${averageDurationNew}ms`);
+                console.log(`New) Median time for ${successesNew} successful runs: ${medianDurationNew}ms`);
             } else {
                 console.log('No successful runs');
             }
-        }, numDecreaseRuns * 60 * 1000);
+        }, numIncreaseRuns * 3 * 60 * 1000);
     }
+
+    // TODO: Add close position
+    // TODO: Fix decreasing position
+    // if(testParams.runDecreasePosition > 0) {
+    //     it('Run Decrease Position', async () => {
+    //         if (exchange === undefined) {
+    //             throw new Error("Failed to fetch exchange");
+    //         }
+    //         if (market === undefined) {
+    //             throw new Error("Failed to fetch market");
+    //         }
+    
+    //         priceFeed = await sdk.accountFetcher.getPythPriceFeed(market?.priceFeed);
+    //         if (priceFeed === undefined) {
+    //             throw new Error("Failed to fetch priceFeed");
+    //         }
+
+    //         const sizeDelta = -parseSize(0.1);
+    //         const acceptablePrice = parsePrice(1.1 * priceFeed.aggregate.price);
+    //         const markets = [marketAddress];
+    //         const priceFeeds = [market.priceFeed];
+    
+    //         let successes = 0;
+    //         let totalDuration = 0;
+
+    //         for (let i = 0; i < numDecreaseRuns; i++) {
+    //             try {
+    //                 const startTime = now();
+    //                 const {
+    //                     context: { slot: minContextSlot },
+    //                     value: { 
+    //                         blockhash: latestBlockhash,
+    //                         lastValidBlockHeight 
+    //                     }
+    //                 } = await connection.getLatestBlockhashAndContext();
+    
+    //                 const tx = sdk
+    //                     .transactionBuilder()
+    //                     .modifyPosition(
+    //                         { exchange: exchangeAddress, marginAccount, signer: signer.publicKey },
+    //                         { sizeDelta, marketId, acceptablePrice },
+    //                         markets,
+    //                         priceFeeds
+    //                     )
+    //                     .feePayer(signer.publicKey)
+    //                     .buildSigned([signer], latestBlockhash);
+    
+    //                     console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
+    //                 await sendAndConfirmTransaction(connection, tx, [signer],{
+    //                     minContextSlot: minContextSlot
+    //                 });
+    //                 const endTime = now();
+    //                 const duration = endTime - startTime;
+    
+    //                 successes++;
+    //                 totalDuration += duration;
+    //                 console.log(`Run ${i+1}: Success, took ${duration}ms`);
+    //             } catch (error) {
+    //                 console.log(`Run ${i+1}: Failed, error: ${error}`);
+    //             }
+    //         }
+    //         if (successes > 0) {
+    //             const averageDuration = totalDuration / successes;
+    //             console.log(`Average time for ${successes} successful runs: ${averageDuration}ms`);
+    //         } else {
+    //             console.log('No successful runs');
+    //         }
+    //     }, numDecreaseRuns * 60 * 1000);
+    // }
 });

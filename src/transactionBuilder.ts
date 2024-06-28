@@ -1,4 +1,4 @@
-import { ComputeBudgetProgram, Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { ParclV3InstructionBuilder } from "./instructionBuilder";
 import {
   CreateMarginAccountAccounts,
@@ -31,6 +31,7 @@ import {
 } from "./utils";
 import { Address } from "./types";
 import { getMarketPda } from "./pda";
+import { getPriorityFeeEstimate } from "./utils/helius"
 
 export class ParclV3TransactionBuilder {
   ix: ParclV3InstructionBuilder;
@@ -60,6 +61,45 @@ export class ParclV3TransactionBuilder {
     return tx;
   }
 
+  async buildOptimizedSigned(
+    connection: Connection,
+    signers: Signer[], 
+    recentBlockhash: string, 
+    lastValidBlockHeight?: number,
+    priorityLevel?: string,
+  ): Promise<Transaction> {
+    const tx = new Transaction().add(...this._instructions);
+    if (this._feePayer !== undefined) {
+      tx.feePayer = translateAddress(this._feePayer);
+    }
+    if (lastValidBlockHeight !== undefined) {
+      tx.lastValidBlockHeight = lastValidBlockHeight;
+    }
+
+    tx.recentBlockhash = recentBlockhash;
+
+    tx.partialSign(...signers);
+
+    const rpcResponse = await connection.simulateTransaction(tx, signers);
+
+    // getErrorFromRPCResponse(rpcResponse);
+
+    const units = rpcResponse.value.unitsConsumed || 150_000;
+
+    console.log(`Optimal compute units for transaction: ${units}`);
+
+    const adjusted_units = units + 10000;
+
+    this._instructions[0] = ComputeBudgetProgram.setComputeUnitLimit({units: adjusted_units})
+
+    const priorityLev = priorityLevel || "Low";
+    const microLamports = await getPriorityFeeEstimate(priorityLev, tx);
+
+    this._instructions[1] = ComputeBudgetProgram.setComputeUnitPrice({microLamports});
+
+    return new Transaction().add(...this._instructions)
+  }
+
   buildUnsigned(): Transaction {
     const tx = new Transaction().add(...this._instructions);
     if (this._feePayer !== undefined) {
@@ -83,9 +123,17 @@ export class ParclV3TransactionBuilder {
     return this;
   }
 
-  setComputeBudget(units: number): this {
+  setComputeUnitBudget(units: number): this {
     const ix = ComputeBudgetProgram.setComputeUnitLimit({
       units,
+    });
+
+    return this.instruction(ix);
+  }
+
+  setComputeUnitPrice(microLamports: number | bigint): this {
+    const ix = ComputeBudgetProgram.setComputeUnitPrice({
+      microLamports,
     });
 
     return this.instruction(ix);
