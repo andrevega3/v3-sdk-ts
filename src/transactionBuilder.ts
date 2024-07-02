@@ -1,4 +1,4 @@
-import { ComputeBudgetProgram, Connection, Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { Commitment, ComputeBudgetProgram, Connection, Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
 import { ParclV3InstructionBuilder } from "./instructionBuilder";
 import {
   CreateMarginAccountAccounts,
@@ -31,7 +31,7 @@ import {
 } from "./utils";
 import { Address } from "./types";
 import { getMarketPda } from "./pda";
-import { getPriorityFeeEstimate } from "./utils/helius"
+import { getPriorityFeeEstimate } from "./utils/helius";
 
 export class ParclV3TransactionBuilder {
   ix: ParclV3InstructionBuilder;
@@ -64,38 +64,37 @@ export class ParclV3TransactionBuilder {
   async buildOptimizedSigned(
     connection: Connection,
     signers: Signer[], 
-    recentBlockhash: string, 
-    lastValidBlockHeight?: number,
     priorityLevel?: string,
+    commitment?: Commitment | undefined,
   ): Promise<Transaction> {
     const tx = new Transaction().add(...this._instructions);
     if (this._feePayer !== undefined) {
       tx.feePayer = translateAddress(this._feePayer);
     }
-    if (lastValidBlockHeight !== undefined) {
-      tx.lastValidBlockHeight = lastValidBlockHeight;
-    }
+    const getLatestBlockhashAndContext = await connection.getLatestBlockhashAndContext({ commitment });
 
+    const recentBlockhash: string = getLatestBlockhashAndContext.value.blockhash;
+    const lastValidBlockHeight: number = getLatestBlockhashAndContext.value.lastValidBlockHeight;
+    tx.lastValidBlockHeight = lastValidBlockHeight;
     tx.recentBlockhash = recentBlockhash;
 
     tx.partialSign(...signers);
 
     const rpcResponse = await connection.simulateTransaction(tx, signers);
 
-    // getErrorFromRPCResponse(rpcResponse);
-
-    const units = rpcResponse.value.unitsConsumed || 150_000;
-
-    console.log(`Optimal compute units for transaction: ${units}`);
-
-    const adjusted_units = units + 10000;
-
-    this._instructions[0] = ComputeBudgetProgram.setComputeUnitLimit({units: adjusted_units})
+    if (rpcResponse.value.unitsConsumed) {
+      const adjusted_units = rpcResponse.value.unitsConsumed + (.1 * rpcResponse.value.unitsConsumed);
+      console.log(`Compute buget: ${adjusted_units}`);
+      this._instructions[0] = ComputeBudgetProgram.setComputeUnitLimit({units: adjusted_units})
+    }
 
     const priorityLev = priorityLevel || "Low";
-    const microLamports = await getPriorityFeeEstimate(priorityLev, tx);
-
-    this._instructions[1] = ComputeBudgetProgram.setComputeUnitPrice({microLamports});
+    let microLamports = await getPriorityFeeEstimate(priorityLev, tx);
+    if (microLamports > 0) {
+      microLamports = Math.floor(microLamports)
+      console.log(`MicoLamport: ${microLamports}`);
+      this._instructions[1] = ComputeBudgetProgram.setComputeUnitPrice({microLamports});
+    }
 
     return new Transaction().add(...this._instructions)
   }

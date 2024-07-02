@@ -65,7 +65,6 @@ describe('Modify Position Performance Test', () => {
         [exchangeAddress] = getExchangePda(0);
         signer = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY as string));
         commitment = process.env.COMMITMENT as Commitment | undefined;
-        // const rpcUrl = clusterApiUrl("mainnet-beta");
         const rpcUrl = process.env.RPC_URL;
         sdk = new ParclV3Sdk({ rpcUrl: rpcUrl, commitment });
         connection = new Connection(rpcUrl, commitment);
@@ -81,7 +80,7 @@ describe('Modify Position Performance Test', () => {
             translateAddress(exchange.collateralMint),
             signer.publicKey
         );
-        // deposit $5.1 of margin collateral
+
         // NOTE: flip collateral expo sign
         margin = parseCollateralAmount(2, -exchange.collateralExpo);
         [marketAddress] = getMarketPda(exchangeAddress, marketId);
@@ -165,48 +164,6 @@ describe('Modify Position Performance Test', () => {
             console.log(`Number of runs: ${numIncreaseRuns}`)
             console.log(`Commitment level: ${commitment}`)
             for (let i = 0; i < numIncreaseRuns; i++) {
-                const startTimeNew = now()
-                try {
-                    const getLatestBlockhashAndContext = await connection.getLatestBlockhashAndContext({ commitment: "confirmed" });
-
-                    const minContextSlot: number = getLatestBlockhashAndContext.context.slot - 4;
-                    const blockhash: string = getLatestBlockhashAndContext.value.blockhash;
-                    const lastValidBlockHeight: number = getLatestBlockhashAndContext.value.lastValidBlockHeight;
-
-                    const tx = await sdk
-                        .transactionBuilder()
-                        .setComputeUnitBudget(400_000) // Will optimize later
-                        .setComputeUnitPrice(1) // Will optimize later
-                        .modifyPosition(
-                            { exchange: exchangeAddress, marginAccount, signer: signer.publicKey },
-                            { sizeDelta, marketId, acceptablePrice },
-                            markets,
-                            priceFeeds
-                        )
-                        .feePayer(signer.publicKey)
-                        .buildOptimizedSigned(connection, [signer], blockhash, lastValidBlockHeight, "Medium");
-                    console.log(`minContextSlot: ${minContextSlot}, LastValidBlockHeight: ${lastValidBlockHeight}`);
-                    await sendAndConfirmTransaction(connection, tx, [signer],
-                        {
-                            // minContextSlot: minContextSlot,
-                            commitment: "confirmed"
-                        }
-                    );
-                    const endTime = now();
-                    const duration = endTime - startTimeNew;
-    
-                    successesNew++;
-                    totalDurationNew += duration;
-                    durationsNew.push(duration);
-                    console.log(`New) Run ${i+1}: Success, took ${duration}ms`);
-                } catch (error) {
-                    const endTime = now();
-                    const duration = endTime - startTimeNew;
-
-                    totalDurationNew += duration;
-                    durationsNew.push(duration);
-                    console.log(`New) Run ${i+1}: Failed, error: ${error}`);
-                }
                 const startTimeOld = now();
                 try {
                     const { blockhash: latestBlockhash } = await connection.getLatestBlockhash();
@@ -237,7 +194,43 @@ describe('Modify Position Performance Test', () => {
                     durations.push(duration);
                     console.log(`Old) Run ${i+1}: Failed, error: ${error}`);
                 }
-                await wait(2000)
+                await wait(2000);
+                const startTimeNew = now();
+                try {
+                    const tx = await sdk
+                        .transactionBuilder()
+                        .setComputeUnitBudget(400_000) // Both compute unit and price are optimized later
+                        .setComputeUnitPrice(1)
+                        .modifyPosition(
+                            { exchange: exchangeAddress, marginAccount, signer: signer.publicKey },
+                            { sizeDelta, marketId, acceptablePrice },
+                            markets,
+                            priceFeeds
+                        )
+                        .feePayer(signer.publicKey)
+                        .buildOptimizedSigned(connection, [signer], "Low", commitment);
+                    await sendAndConfirmTransaction(connection, tx, [signer],
+                        {
+                            commitment: commitment,
+                            preflightCommitment: commitment,
+                            skipPreflight: false
+                        }
+                    );
+                    const endTime = now();
+                    const duration = endTime - startTimeNew;
+    
+                    successesNew++;
+                    totalDurationNew += duration;
+                    durationsNew.push(duration);
+                    console.log(`New) Run ${i+1}: Success, took ${duration}ms`);
+                } catch (error) {
+                    const endTime = now();
+                    const duration = endTime - startTimeNew;
+
+                    totalDurationNew += duration;
+                    durationsNew.push(duration);
+                    console.log(`New) Run ${i+1}: Failed, error: ${error}`);
+                }
             }
             if (successes > 0) {
                 const averageDuration = totalDuration / successes;
